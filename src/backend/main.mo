@@ -15,7 +15,14 @@ import AccessControl "authorization/access-control";
 
 
 actor {
-  let accessControlState = AccessControl.initState();
+  // ── Auth state (stable so it survives upgrades) ───────────────────────
+  stable var stableAdminAssigned : Bool = false;
+  stable var stableUserRoles = Map.empty<Principal, AccessControl.UserRole>();
+
+  let accessControlState : AccessControl.AccessControlState = {
+    var adminAssigned = stableAdminAssigned;
+    userRoles = stableUserRoles;
+  };
   include MixinAuthorization(accessControlState);
 
   public type Id = Text;
@@ -297,11 +304,13 @@ actor {
   stable var userProfiles = Map.empty<Principal, UserProfile>();
 
   system func preupgrade() {
+    stableAdminAssigned := accessControlState.adminAssigned;
     activitiesStore := Map.empty<Id, ActivityV1>();
     dealsStore      := Map.empty<Id, DealV1>();
   };
 
   system func postupgrade() {
+    accessControlState.adminAssigned := stableAdminAssigned;
     for ((k, v) in activitiesStore.entries()) {
       activitiesStoreV2.add(k, {
         id          = v.id;
