@@ -31,6 +31,8 @@ export default function ActivityPage() {
   const [activities, setActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [activityType, setActivityType] = useState<ActivityType>(
@@ -53,10 +55,13 @@ export default function ActivityPage() {
 
   useEffect(() => {
     if (!isFetching && actor) reload();
+    else if (!isFetching && !actor) setLoading(false);
   }, [actor, isFetching, reload]);
 
   async function handleAdd() {
     if (!title.trim() || !actor) return;
+    setSaving(true);
+    setSaveError("");
     try {
       await actor.createActivity({
         title,
@@ -66,8 +71,10 @@ export default function ActivityPage() {
         contactName: "",
         dealId: "",
         dealName: "",
+        companyId: "",
+        companyName: "",
         occurredAt: BigInt(Date.now()),
-      } as any);
+      });
       setTitle("");
       setDescription("");
       setActivityType(ActivityType.Call);
@@ -75,6 +82,9 @@ export default function ActivityPage() {
       await reload();
     } catch (e) {
       console.error("Failed to create activity", e);
+      setSaveError("Failed to save. Please try again.");
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -102,7 +112,10 @@ export default function ActivityPage() {
         <button
           type="button"
           data-ocid="activity.primary_button"
-          onClick={() => setShowForm(!showForm)}
+          onClick={() => {
+            setShowForm(!showForm);
+            setSaveError("");
+          }}
           className="flex items-center gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-medium px-4 py-2 rounded-lg transition-colors"
         >
           <Plus size={14} /> Log Activity
@@ -169,19 +182,26 @@ export default function ActivityPage() {
               />
             </div>
           </div>
+          {saveError && (
+            <p className="text-xs text-red-500 mb-3">{saveError}</p>
+          )}
           <div className="flex gap-2">
             <button
               type="button"
               data-ocid="activity.submit_button"
               onClick={handleAdd}
-              className="bg-primary text-primary-foreground text-sm font-medium px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors"
+              disabled={saving || !title.trim()}
+              className="bg-primary text-primary-foreground text-sm font-medium px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Save
+              {saving ? "Saving..." : "Save"}
             </button>
             <button
               type="button"
               data-ocid="activity.cancel_button"
-              onClick={() => setShowForm(false)}
+              onClick={() => {
+                setShowForm(false);
+                setSaveError("");
+              }}
               className="text-sm text-muted-foreground hover:text-foreground px-2 py-2"
             >
               Cancel
