@@ -246,6 +246,24 @@ export enum UserRole {
     user = "user",
     guest = "guest"
 }
+export interface StageBreakdownEntry {
+    stage: Stage;
+    count: number;
+    value: number;
+}
+export interface DashboardSummary {
+    pipeline: number;
+    openDeals: number;
+    winRate: number;
+    tasksDueToday: number;
+    overdueTasks: number;
+    totalContacts: number;
+    overdueFollowUps: number;
+    todayFollowUps: number;
+    stageBreakdown: Array<StageBreakdownEntry>;
+    recentActivities: Array<Activity>;
+    followUpDeals: Array<Deal>;
+}
 export interface backendInterface {
     _initializeAccessControlWithSecret(userSecret: string): Promise<void>;
     assignCallerUserRole(user: Principal, role: UserRole): Promise<void>;
@@ -288,6 +306,7 @@ export interface backendInterface {
     updateContact(id: string, input: ContactInput): Promise<void>;
     updateDeal(id: string, input: DealInput): Promise<void>;
     updateTask(id: string, input: TaskInput): Promise<void>;
+    getDashboardSummary(todayStart: bigint, todayEnd: bigint): Promise<DashboardSummary>;
 }
 import type { Activity as _Activity, ActivityInput as _ActivityInput, ActivityType as _ActivityType, Deal as _Deal, DealInput as _DealInput, DealNextActivityInput as _DealNextActivityInput, Id as _Id, Stage as _Stage, Task as _Task, TaskInput as _TaskInput, UserProfile as _UserProfile, UserRole as _UserRole } from "./declarations/backend.did.d.ts";
 export class Backend implements backendInterface {
@@ -851,6 +870,40 @@ export class Backend implements backendInterface {
             const result = await this.actor.updateDeal(arg0, to_candid_DealInput_n7(this._uploadFile, this._downloadFile, arg1));
             return result;
         }
+    }
+    async getDashboardSummary(todayStart: bigint, todayEnd: bigint): Promise<DashboardSummary> {
+        const [deals, tasks, activities, contacts] = await Promise.all([
+            this.listDeals(),
+            this.listTasks(),
+            this.listActivities(),
+            this.listContacts(),
+        ]);
+        const openDeals = deals.filter(d => d.stage !== Stage.ClosedWon && d.stage !== Stage.ClosedLost);
+        const pipeline = openDeals.reduce((s, d) => s + d.value, 0);
+        const closedWon = deals.filter(d => d.stage === Stage.ClosedWon).length;
+        const closedLost = deals.filter(d => d.stage === Stage.ClosedLost).length;
+        const winRate = closedWon + closedLost > 0 ? (closedWon / (closedWon + closedLost)) * 100 : 0;
+        const tasksDueToday = tasks.filter(t => !t.completed && t.dueDate !== undefined && t.dueDate >= todayStart && t.dueDate <= todayEnd).length;
+        const overdueTasks = tasks.filter(t => !t.completed && t.dueDate !== undefined && t.dueDate < todayStart).length;
+        const stageOrder = [Stage.Lead, Stage.Qualified, Stage.Proposal, Stage.Negotiation, Stage.ClosedWon, Stage.ClosedLost];
+        const stageBreakdown: StageBreakdownEntry[] = stageOrder.map(stage => {
+            const sd = deals.filter(d => d.stage === stage);
+            return { stage, count: sd.length, value: sd.reduce((s, d) => s + d.value, 0) };
+        });
+        const recentActivities = [...activities].sort((a, b) => Number(b.occurredAt - a.occurredAt)).slice(0, 8);
+        const dealsWithFollowUp = openDeals.filter(d => d.nextActivityDate !== undefined).sort((a, b) => Number((a.nextActivityDate ?? 0n) - (b.nextActivityDate ?? 0n)));
+        let overdueFollowUps = 0;
+        let todayFollowUps = 0;
+        for (const d of dealsWithFollowUp) {
+            const dt = d.nextActivityDate!;
+            if (dt < todayStart) overdueFollowUps++;
+            if (dt >= todayStart && dt <= todayEnd) todayFollowUps++;
+        }
+        return {
+            pipeline, openDeals: openDeals.length, winRate, tasksDueToday, overdueTasks,
+            totalContacts: contacts.length, overdueFollowUps, todayFollowUps,
+            stageBreakdown, recentActivities, followUpDeals: dealsWithFollowUp.slice(0, 5),
+        };
     }
     async updateTask(arg0: string, arg1: TaskInput): Promise<void> {
         if (this.processError) {

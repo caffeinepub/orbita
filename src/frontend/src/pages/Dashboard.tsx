@@ -86,7 +86,7 @@ const activityTypeLabel: Record<ActivityType, string> = {
   [ActivityType.Note]: "Note",
 };
 
-const STAGE_ORDER = [
+const _STAGE_ORDER = [
   Stage.Lead,
   Stage.Qualified,
   Stage.Proposal,
@@ -223,89 +223,37 @@ export default function Dashboard() {
   const loadData = useCallback(async () => {
     if (!actor) return;
     try {
-      const now = BigInt(Date.now());
       const todayStart = BigInt(new Date().setHours(0, 0, 0, 0));
       const todayEnd = BigInt(new Date().setHours(23, 59, 59, 999));
 
-      const [deals, tasks, activities, contacts] = await Promise.all([
-        actor.listDeals(),
-        actor.listTasks(),
-        actor.listActivities(),
-        actor.listContacts(),
-      ]);
+      const summary = await actor.getDashboardSummary(todayStart, todayEnd);
 
-      const openDeals = deals.filter(
-        (d) => d.stage !== Stage.ClosedWon && d.stage !== Stage.ClosedLost,
-      );
-      const pipeline = openDeals.reduce((s, d) => s + d.value, 0);
-      const overdueTasks = tasks.filter(
-        (t) => !t.completed && t.dueDate !== undefined && t.dueDate < now,
-      ).length;
-
-      const closedWon = deals.filter((d) => d.stage === Stage.ClosedWon).length;
-      const closedLost = deals.filter(
-        (d) => d.stage === Stage.ClosedLost,
-      ).length;
-      const winRate =
-        closedWon + closedLost > 0
-          ? Math.round((closedWon / (closedWon + closedLost)) * 100)
-          : 0;
-
-      const tasksDueToday = tasks.filter(
-        (t) =>
-          !t.completed &&
-          t.dueDate !== undefined &&
-          t.dueDate >= todayStart &&
-          t.dueDate <= todayEnd,
-      ).length;
-
-      const breakdown: StageBreakdown[] = STAGE_ORDER.map((stage) => {
-        const stageDeals = deals.filter((d) => d.stage === stage);
-        return {
-          stage,
-          count: stageDeals.length,
-          value: stageDeals.reduce((s, d) => s + d.value, 0),
-        };
+      setStats({
+        pipeline: summary.pipeline,
+        openDeals: summary.openDeals,
+        overdueTasks: summary.overdueTasks,
+        winRate: Math.round(summary.winRate),
+        tasksDueToday: summary.tasksDueToday,
+        totalContacts: summary.totalContacts,
       });
-
-      // Follow-up analysis
-      const activeDeals = deals.filter(
-        (d) => d.stage !== Stage.ClosedWon && d.stage !== Stage.ClosedLost,
+      setStageBreakdown(
+        summary.stageBreakdown.map((s) => ({
+          stage: s.stage,
+          count: s.count,
+          value: s.value,
+        })),
       );
-      const dealsWithFollowUp = activeDeals
-        .filter((d) => d.nextActivityDate !== undefined)
-        .sort((a, b) =>
-          Number((a.nextActivityDate ?? 0n) - (b.nextActivityDate ?? 0n)),
-        );
+      setRecentActivities(summary.recentActivities);
 
-      let overdueCount = 0;
-      let todayCount = 0;
-      const followUpList: FollowUp[] = dealsWithFollowUp.map((deal) => {
+      const followUpList: FollowUp[] = summary.followUpDeals.map((deal) => {
         const dt = deal.nextActivityDate!;
         const isOverdue = dt < todayStart;
         const isDueToday = dt >= todayStart && dt <= todayEnd;
-        if (isOverdue) overdueCount++;
-        if (isDueToday) todayCount++;
         return { deal, isOverdue, isDueToday };
       });
-
-      setStats({
-        pipeline,
-        openDeals: openDeals.length,
-        overdueTasks,
-        winRate,
-        tasksDueToday,
-        totalContacts: contacts.length,
-      });
-      setStageBreakdown(breakdown);
-      setRecentActivities(
-        [...activities]
-          .sort((a, b) => Number(b.occurredAt - a.occurredAt))
-          .slice(0, 8),
-      );
-      setFollowUps(followUpList.slice(0, 5));
-      setOverdueFollowUps(overdueCount);
-      setTodayFollowUps(todayCount);
+      setFollowUps(followUpList);
+      setOverdueFollowUps(summary.overdueFollowUps);
+      setTodayFollowUps(summary.todayFollowUps);
     } catch (e) {
       console.error("Failed to load dashboard", e);
     } finally {

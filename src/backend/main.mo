@@ -228,6 +228,7 @@ actor {
     name : Text;
   };
 
+
   // ── Security: rate limiting ────────────────────────────────────────────
   // Tracks (windowStart: Int, callCount: Nat) per principal.
   // Window is 60 seconds; max 100 calls per window.

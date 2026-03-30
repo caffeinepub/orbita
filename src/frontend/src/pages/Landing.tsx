@@ -552,7 +552,7 @@ export default function Landing() {
               className="w-2 h-2 rounded-full animate-pulse"
               style={{ background: "oklch(0.78 0.16 255)" }}
             />
-            Built on the Internet Computer \u00b7 Powered by vetKD
+            Your CRM. On-chain, encrypted, and permanent.
           </motion.div>
 
           {/* FIX 1B: Headline pushed to 7.5rem ceiling, tighter leading */}
@@ -602,13 +602,9 @@ export default function Landing() {
             className="text-lg md:text-xl max-w-2xl mx-auto mb-10 leading-relaxed"
             style={{ color: "oklch(0.65 0.018 260)" }}
           >
-            Orbita is the only CRM where your data is stored on-chain, encrypted
-            end-to-end with ICP&apos;s vetKD protocol, and lives{" "}
-            <em style={{ color: "oklch(0.82 0.015 260)", fontStyle: "italic" }}>
-              permanently
-            </em>{" "}
-            \u2014 with no vendor in the middle, no passwords to lose, and no
-            surprise shutdowns.
+            Orbita gives you a CRM that no company can shut down, no hacker can
+            read, and no vendor can hold hostage. Your data lives on-chain,
+            encrypted with vetKD, and is yours — permanently.
           </motion.p>
 
           {/* CTAs */}
@@ -1188,8 +1184,9 @@ export default function Landing() {
               className="text-lg mb-12"
               style={{ color: "oklch(0.56 0.014 260)" }}
             >
-              No credit card. No password. Just your Internet Identity \u2014
-              and a CRM that will never disappear.
+              Sign in with Internet Identity. No credit card, no password, no
+              risk. Your pipeline is live in seconds — and it stays live,
+              forever.
             </p>
 
             <button

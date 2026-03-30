@@ -205,6 +205,25 @@ export interface backendInterface {
     updateContact(id: string, input: ContactInput): Promise<void>;
     updateDeal(id: string, input: DealInput): Promise<void>;
     updateTask(id: string, input: TaskInput): Promise<void>;
+    getDashboardSummary(todayStart: bigint, todayEnd: bigint): Promise<DashboardSummary>;
     vetkdPublicKey(): Promise<Uint8Array>;
     vetkdDeriveKey(transportPublicKey: Uint8Array): Promise<Uint8Array>;
+}
+export interface StageBreakdownEntry {
+    stage: Stage;
+    count: number;
+    value: number;
+}
+export interface DashboardSummary {
+    pipeline: number;
+    openDeals: number;
+    winRate: number;
+    tasksDueToday: number;
+    overdueTasks: number;
+    totalContacts: number;
+    overdueFollowUps: number;
+    todayFollowUps: number;
+    stageBreakdown: Array<StageBreakdownEntry>;
+    recentActivities: Array<Activity>;
+    followUpDeals: Array<Deal>;
 }
