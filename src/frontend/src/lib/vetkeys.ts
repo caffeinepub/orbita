@@ -78,7 +78,7 @@ export async function getOrDeriveAesKey(
   const verificationKey = DerivedPublicKey.deserialize(
     new Uint8Array(verificationKeyBytes as unknown as number[]),
   );
-  const encryptedVetKey = new EncryptedVetKey(
+  const encryptedVetKey = EncryptedVetKey.deserialize(
     new Uint8Array(encryptedKeyBytes as unknown as number[]),
   );
 
