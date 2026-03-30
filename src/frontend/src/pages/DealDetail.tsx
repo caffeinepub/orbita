@@ -116,6 +116,7 @@ export default function DealDetail() {
   const isNew = id === "new";
 
   const [form, setForm] = useState<DealInput>(emptyForm);
+  const [valueInput, setValueInput] = useState("");
   const [tagsInput, setTagsInput] = useState("");
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
@@ -190,6 +191,7 @@ export default function DealDetail() {
           nextActivityNote: d.nextActivityNote,
           nextActivityType: d.nextActivityType,
         });
+        setValueInput(d.value > 0 ? String(d.value) : "");
         setTagsInput(d.tags.join(", "));
         setNextDate(bigintToDateInput(d.nextActivityDate));
         setNextType(d.nextActivityType ?? ActivityType.Call);
@@ -452,9 +454,22 @@ export default function DealDetail() {
             </div>
             <input
               id="deal-value"
-              type="number"
-              value={form.value}
-              onChange={(e) => set("value", Number(e.target.value))}
+              type="text"
+              inputMode="decimal"
+              placeholder="0"
+              value={valueInput}
+              onChange={(e) => {
+                const raw = e.target.value
+                  .replace(/[^0-9.]/g, "")
+                  .replace(/^0+(\d)/, "$1");
+                setValueInput(raw);
+                set("value", raw === "" ? 0 : Number(raw));
+              }}
+              onBlur={() => {
+                const cleaned = valueInput.replace(/\.$/, "");
+                setValueInput(cleaned);
+                set("value", cleaned === "" ? 0 : Number(cleaned));
+              }}
               className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-card focus:outline-none focus:ring-2 focus:ring-primary/30"
             />
           </div>
