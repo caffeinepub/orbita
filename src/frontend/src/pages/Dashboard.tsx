@@ -6,6 +6,7 @@ import {
   FileText,
   Mail,
   Phone,
+  RefreshCw,
   TrendingUp,
   Users,
 } from "lucide-react";
@@ -27,6 +28,13 @@ function formatRelative(ts: bigint) {
   const hrs = Math.floor(diff / 3600000);
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(diff / 86400000)}d ago`;
+}
+
+function formatStaleness(ts: number | null): string {
+  if (ts === null) return "";
+  const secs = Math.floor((Date.now() - ts) / 1000);
+  if (secs < 60) return `Updated ${secs}s ago`;
+  return `Updated ${Math.floor(secs / 60)}min ago`;
 }
 
 const typeColors: Record<ActivityType, string> = {
@@ -85,14 +93,6 @@ const activityTypeLabel: Record<ActivityType, string> = {
   [ActivityType.Meeting]: "Meeting",
   [ActivityType.Note]: "Note",
 };
-
-const _STAGE_ORDER = [
-  Stage.Lead,
-  Stage.Qualified,
-  Stage.Proposal,
-  Stage.ClosedWon,
-  Stage.ClosedLost,
-];
 
 const METRIC_SKELETON_KEYS = [
   "pipeline",
@@ -219,9 +219,13 @@ export default function Dashboard() {
   const [overdueFollowUps, setOverdueFollowUps] = useState(0);
   const [todayFollowUps, setTodayFollowUps] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [stalenessLabel, setStalenessLabel] = useState("");
 
   const loadData = useCallback(async () => {
     if (!actor) return;
+    setRefreshing(true);
     try {
       const todayStart = BigInt(new Date().setHours(0, 0, 0, 0));
       const todayEnd = BigInt(new Date().setHours(23, 59, 59, 999));
@@ -254,16 +258,43 @@ export default function Dashboard() {
       setFollowUps(followUpList);
       setOverdueFollowUps(summary.overdueFollowUps);
       setTodayFollowUps(summary.todayFollowUps);
+      setLastUpdated(Date.now());
     } catch (e) {
       console.error("Failed to load dashboard", e);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, [actor]);
 
+  // Initial load — also handles the case where actor is confirmed null after auth resolves
   useEffect(() => {
-    if (!isFetching && actor) loadData();
+    if (isFetching) return; // still resolving auth, wait
+    if (!actor) {
+      // Auth resolved but no actor (login required or initialization failed)
+      setLoading(false);
+      return;
+    }
+    loadData();
   }, [actor, isFetching, loadData]);
+
+  // Background polling every 60s
+  useEffect(() => {
+    if (!actor) return;
+    const id = setInterval(() => {
+      loadData();
+    }, 60000);
+    return () => clearInterval(id);
+  }, [actor, loadData]);
+
+  // Staleness label refresh every 10s
+  useEffect(() => {
+    setStalenessLabel(formatStaleness(lastUpdated));
+    const id = setInterval(() => {
+      setStalenessLabel(formatStaleness(lastUpdated));
+    }, 10000);
+    return () => clearInterval(id);
+  }, [lastUpdated]);
 
   const maxStageValue = Math.max(...stageBreakdown.map((s) => s.value), 1);
 
@@ -324,9 +355,30 @@ export default function Dashboard() {
         <h1 className="font-heading text-xl font-semibold text-foreground">
           Dashboard
         </h1>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          Your CRM overview
-        </p>
+        <div className="flex items-center gap-2 mt-0.5">
+          <p className="text-sm text-muted-foreground">Your CRM overview</p>
+          {stalenessLabel && (
+            <>
+              <span className="text-xs text-muted-foreground/40">·</span>
+              <span className="text-xs text-muted-foreground/60">
+                {stalenessLabel}
+              </span>
+              <button
+                type="button"
+                data-ocid="dashboard.refresh_button"
+                onClick={loadData}
+                disabled={refreshing}
+                className="text-muted-foreground/50 hover:text-muted-foreground transition-colors disabled:pointer-events-none"
+                aria-label="Refresh dashboard"
+              >
+                <RefreshCw
+                  size={12}
+                  className={refreshing ? "animate-spin" : ""}
+                />
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {loading ? (

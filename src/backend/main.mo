@@ -7,6 +7,8 @@ import Random "mo:core/Random";
 import Int "mo:core/Int";
 import Nat8 "mo:core/Nat8";
 import Time "mo:core/Time";
+import Float "mo:core/Float";
+import Iter "mo:core/Iter";
 
 import MixinAuthorization "authorization/MixinAuthorization";
 import AccessControl "authorization/access-control";
@@ -228,11 +230,30 @@ actor {
     name : Text;
   };
 
+  // ── Dashboard summary types ────────────────────────────────────────────
+
+  public type StageBreakdownEntry = {
+    stage : Stage;
+    count : Nat;
+    value : Float;
+  };
+
+  public type DashboardSummary = {
+    pipeline : Float;
+    openDeals : Nat;
+    winRate : Nat;
+    tasksDueToday : Nat;
+    overdueTasks : Nat;
+    totalContacts : Nat;
+    stageBreakdown : [StageBreakdownEntry];
+    recentActivities : [Activity];
+    followUpDeals : [Deal];
+    overdueFollowUps : Nat;
+    todayFollowUps : Nat;
+  };
 
   // ── Security: rate limiting ────────────────────────────────────────────
-  // Tracks (windowStart: Int, callCount: Nat) per principal.
-  // Window is 60 seconds; max 100 calls per window.
-  let RATE_WINDOW_NS : Int = 60_000_000_000; // 60 seconds in nanoseconds
+  let RATE_WINDOW_NS : Int = 60_000_000_000;
   let RATE_LIMIT_MAX : Nat = 100;
 
   stable var rateLimitMap = Map.empty<Principal, (Int, Nat)>();
@@ -245,7 +266,6 @@ actor {
       };
       case (?(windowStart, count)) {
         if (now - windowStart > RATE_WINDOW_NS) {
-          // New window
           rateLimitMap.add(caller, (now, 1));
         } else if (count >= RATE_LIMIT_MAX) {
           Runtime.trap("Rate limit exceeded. Please slow down.");
@@ -256,11 +276,11 @@ actor {
     };
   };
 
-  // ── Legacy stable vars (backward compat with deployed canister) ────────
+  // ── Legacy stable vars (backward compat) ──────────────────────────────
   stable var activitiesStore = Map.empty<Id, ActivityV1>();
   stable var dealsStore = Map.empty<Id, DealV1>();
 
-  // ── Stable persistence arrays (primary storage) ────────────────────────
+  // ── Migration arrays (legacy scaffolding, kept for compat) ────────────
   stable var stableContacts : [(Id, Contact)] = [];
   stable var stableCompanies : [(Id, Company)] = [];
   stable var stableDeals : [(Id, Deal)] = [];
@@ -268,7 +288,7 @@ actor {
   stable var stableActivities : [(Id, Activity)] = [];
   stable var stableProfiles : [(Principal, UserProfile)] = [];
 
-  // ── Working in-memory Maps (rebuilt on every upgrade) ─────────────────
+  // ── Working stable Maps (primary storage) ─────────────────────────────
   stable var contactsStore = Map.empty<Id, Contact>();
   stable var companiesStore = Map.empty<Id, Company>();
   stable var dealsMap = Map.empty<Id, Deal>();
@@ -375,6 +395,12 @@ actor {
     if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
       Runtime.trap("Unauthorized");
     };
+  };
+
+  // Take at most `n` items from an array (returns full array if smaller)
+  func takeAtMost<T>(arr : [T], n : Nat) : [T] {
+    if (arr.size() <= n) { return arr };
+    arr.vals().take(n).toArray();
   };
 
   // ── User Profile ───────────────────────────────────────────────────────
@@ -804,6 +830,18 @@ actor {
     activitiesStoreV2.values().toArray().filter(func(a) { a.tenantId == tid });
   };
 
+  public query ({ caller }) func listRecentActivities(limit : Nat) : async [Activity] {
+    requireUser(caller);
+    let tid = getTenantId(caller);
+    let all = activitiesStoreV2.values().toArray().filter(func(a : Activity) : Bool { a.tenantId == tid });
+    let sorted = all.sort(func(a : Activity, b : Activity) : { #less; #equal; #greater } {
+      if (a.occurredAt > b.occurredAt) #less
+      else if (a.occurredAt < b.occurredAt) #greater
+      else #equal
+    });
+    takeAtMost(sorted, limit);
+  };
+
   public query ({ caller }) func getActivity(id : Text) : async Activity {
     requireUser(caller);
     switch (activitiesStoreV2.get(id)) {
@@ -836,6 +874,117 @@ actor {
     });
   };
 
+  // ── Dashboard Summary ──────────────────────────────────────────────────
+
+  public query ({ caller }) func getDashboardSummary(todayStart : Int, todayEnd : Int) : async DashboardSummary {
+    requireUser(caller);
+    let tid = getTenantId(caller);
+
+    // ── Deal aggregation ─────────────────────────────────────────────────
+    var pipeline : Float = 0.0;
+    var openDeals : Nat = 0;
+    var closedWon : Nat = 0;
+    var closedLost : Nat = 0;
+
+    var leadCount : Nat = 0; var leadValue : Float = 0.0;
+    var qualifiedCount : Nat = 0; var qualifiedValue : Float = 0.0;
+    var proposalCount : Nat = 0; var proposalValue : Float = 0.0;
+    var negotiationCount : Nat = 0; var negotiationValue : Float = 0.0;
+    var wonCount : Nat = 0; var wonValue : Float = 0.0;
+    var lostCount : Nat = 0; var lostValue : Float = 0.0;
+
+    var overdueFollowUps : Nat = 0;
+    var todayFollowUps : Nat = 0;
+
+    for (d in dealsMap.values()) {
+      if (d.tenantId == tid) {
+        switch (d.stage) {
+          case (#Lead)        { leadCount += 1;        leadValue += d.value;        openDeals += 1; pipeline += d.value };
+          case (#Qualified)   { qualifiedCount += 1;   qualifiedValue += d.value;   openDeals += 1; pipeline += d.value };
+          case (#Proposal)    { proposalCount += 1;    proposalValue += d.value;    openDeals += 1; pipeline += d.value };
+          case (#Negotiation) { negotiationCount += 1; negotiationValue += d.value; openDeals += 1; pipeline += d.value };
+          case (#ClosedWon)   { wonCount += 1;  wonValue += d.value;  closedWon  += 1 };
+          case (#ClosedLost)  { lostCount += 1; lostValue += d.value; closedLost += 1 };
+        };
+        switch (d.nextActivityDate) {
+          case (null) {};
+          case (?dt) {
+            if (dt < todayStart)                        { overdueFollowUps += 1 }
+            else if (dt >= todayStart and dt <= todayEnd) { todayFollowUps += 1 };
+          };
+        };
+      };
+    };
+
+    let total = closedWon + closedLost;
+    let winRate : Nat = if (total == 0) 0
+      else closedWon * 100 / total;
+
+    // Follow-up deals: those with a nextActivityDate at or before todayEnd
+    let followUpDeals = dealsMap.values().toArray().filter(func(d : Deal) : Bool {
+      if (d.tenantId != tid) { return false };
+      switch (d.nextActivityDate) {
+        case (null) { false };
+        case (?dt)  { dt <= todayEnd };
+      }
+    });
+
+    // ── Task aggregation ─────────────────────────────────────────────────
+    var tasksDueToday : Nat = 0;
+    var overdueTasks : Nat = 0;
+
+    for (t in tasksStore.values()) {
+      if (t.tenantId == tid and not t.completed) {
+        switch (t.dueDate) {
+          case (null) {};
+          case (?due) {
+            if (due < todayStart)                        { overdueTasks += 1 }
+            else if (due >= todayStart and due <= todayEnd) { tasksDueToday += 1 };
+          };
+        };
+      };
+    };
+
+    // ── Contact count ─────────────────────────────────────────────────────
+    let totalContacts = contactsStore.values().toArray()
+      .filter(func(c : Contact) : Bool { c.tenantId == tid })
+      .size();
+
+    // ── Recent activities (last 8) ───────────────────────────────────────
+    let allActs = activitiesStoreV2.values().toArray()
+      .filter(func(a : Activity) : Bool { a.tenantId == tid });
+    let sortedActs = allActs.sort(func(a : Activity, b : Activity) : { #less; #equal; #greater } {
+      if (a.occurredAt > b.occurredAt) #less
+      else if (a.occurredAt < b.occurredAt) #greater
+      else #equal
+    });
+    let recentActivities = takeAtMost(sortedActs, 8);
+
+    // ── Stage breakdown ───────────────────────────────────────────────────
+    let stageBreakdown : [StageBreakdownEntry] = [
+      { stage = #Lead;        count = leadCount;        value = leadValue        },
+      { stage = #Qualified;   count = qualifiedCount;   value = qualifiedValue   },
+      { stage = #Proposal;    count = proposalCount;    value = proposalValue    },
+      { stage = #Negotiation; count = negotiationCount; value = negotiationValue },
+      { stage = #ClosedWon;   count = wonCount;         value = wonValue         },
+      { stage = #ClosedLost;  count = lostCount;        value = lostValue        },
+    ];
+
+    {
+      pipeline;
+      openDeals;
+      winRate;
+      tasksDueToday;
+      overdueTasks;
+      totalContacts;
+      stageBreakdown;
+      recentActivities;
+      followUpDeals;
+      overdueFollowUps;
+      todayFollowUps;
+    }
+  };
+
   // ── vetKD Encryption Endpoints ─────────────────────────────────────────
 
   type VetKdCurve = { #bls12_381_g2 };
@@ -861,8 +1010,6 @@ actor {
 
   let vetkdContext : Blob = "orbita_crm_v1".encodeUtf8();
 
-  // Requires authenticated caller -- public key is safe to return to any
-  // authenticated user since it is the same for the whole canister.
   public shared ({ caller }) func vetkdPublicKey() : async Blob {
     requireUser(caller);
     let response = await vetkdManagementCanister.vetkd_public_key({
@@ -873,8 +1020,6 @@ actor {
     response.public_key
   };
 
-  // Derives a caller-specific encrypted key. Auth and rate limit checked
-  // before the async call to avoid any async-safety issues.
   public shared ({ caller }) func vetkdDeriveKey(transportPublicKey : Blob) : async Blob {
     requireUser(caller);
     rateLimit(caller);

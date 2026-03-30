@@ -74,20 +74,22 @@ export async function getOrDeriveAesKey(
     actor.vetkdPublicKey(),
   ]);
 
-  // 3. Deserialise, decrypt, and verify
+  // 3. Deserialise verification key and construct encrypted vetKey
   const verificationKey = DerivedPublicKey.deserialize(
     new Uint8Array(verificationKeyBytes as unknown as number[]),
   );
-  const encryptedVetKey = EncryptedVetKey.deserialize(
+  const encryptedVetKey = new EncryptedVetKey(
     new Uint8Array(encryptedKeyBytes as unknown as number[]),
   );
+
+  // 4. Decrypt and verify the vetKey
   const vetKey = encryptedVetKey.decryptAndVerify(
     transportSecretKey,
     verificationKey,
     principalBytes,
   );
 
-  // 4. Derive key material and extract an AES-GCM CryptoKey
+  // 5. Derive key material and extract an AES-GCM CryptoKey
   const keyMaterial = await vetKey.asDerivedKeyMaterial();
   const aesKey = keyMaterial.getCryptoKey();
 
