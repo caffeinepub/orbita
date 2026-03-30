@@ -1,5 +1,6 @@
 import Map "mo:core/Map";
 import Text "mo:core/Text";
+import Nat "mo:core/Nat";
 import Principal "mo:core/Principal";
 import Runtime "mo:core/Runtime";
 import Random "mo:core/Random";
@@ -26,7 +27,6 @@ actor {
 
   // ── Legacy types (kept for upgrade compatibility) ──────────────────────
 
-  // Old Stage without #Negotiation — matches deployed canister's dealsStore
   type StageV1 = {
     #Lead;
     #Qualified;
@@ -35,7 +35,6 @@ actor {
     #ClosedLost;
   };
 
-  // Old Deal using StageV1
   type DealV1 = {
     id : Id;
     tenantId : Id;
@@ -55,7 +54,6 @@ actor {
     updatedAt : Int;
   };
 
-  // Old Activity without companyId/companyName
   type ActivityV1 = {
     id : Id;
     tenantId : Id;
@@ -230,9 +228,34 @@ actor {
     name : Text;
   };
 
+  // ── Security: rate limiting ────────────────────────────────────────────
+  // Tracks (windowStart: Int, callCount: Nat) per principal.
+  // Window is 60 seconds; max 100 calls per window.
+  let RATE_WINDOW_NS : Int = 60_000_000_000; // 60 seconds in nanoseconds
+  let RATE_LIMIT_MAX : Nat = 100;
+
+  stable var rateLimitMap = Map.empty<Principal, (Int, Nat)>();
+
+  func rateLimit(caller : Principal) {
+    let now = Time.now();
+    switch (rateLimitMap.get(caller)) {
+      case (null) {
+        rateLimitMap.add(caller, (now, 1));
+      };
+      case (?(windowStart, count)) {
+        if (now - windowStart > RATE_WINDOW_NS) {
+          // New window
+          rateLimitMap.add(caller, (now, 1));
+        } else if (count >= RATE_LIMIT_MAX) {
+          Runtime.trap("Rate limit exceeded. Please slow down.");
+        } else {
+          rateLimitMap.add(caller, (windowStart, count + 1));
+        };
+      };
+    };
+  };
+
   // ── Legacy stable vars (backward compat with deployed canister) ────────
-  // These match the types from the previously deployed version.
-  // They are drained in postupgrade and cleared in preupgrade.
   stable var activitiesStore = Map.empty<Id, ActivityV1>();
   stable var dealsStore = Map.empty<Id, DealV1>();
 
@@ -252,16 +275,12 @@ actor {
   stable var activitiesStoreV2 = Map.empty<Id, Activity>();
   stable var userProfiles = Map.empty<Principal, UserProfile>();
 
-  // Working maps are stable var -- no serialization needed.
-  // Just clear legacy migration stores so they don't accumulate.
   system func preupgrade() {
     activitiesStore := Map.empty<Id, ActivityV1>();
     dealsStore      := Map.empty<Id, DealV1>();
   };
 
-  // Restore working maps from stable arrays (and migrate legacy data once)
   system func postupgrade() {
-    // Migrate legacy ActivityV1 entries (no companyId/companyName)
     for ((k, v) in activitiesStore.entries()) {
       activitiesStoreV2.add(k, {
         id          = v.id;
@@ -280,7 +299,6 @@ actor {
       });
     };
 
-    // Migrate legacy DealV1 entries (StageV1 → Stage, no Negotiation in old data)
     for ((k, v) in dealsStore.entries()) {
       let newStage : Stage = switch (v.stage) {
         case (#Lead)      #Lead;
@@ -309,15 +327,12 @@ actor {
       });
     };
 
-    // One-time migration: drain stable arrays into stable maps (for deployed data)
-    // After this upgrade, the arrays will be empty and maps persist directly.
     for ((k, v) in stableContacts.vals())   { if (contactsStore.get(k) == null)  { contactsStore.add(k, v) } };
     for ((k, v) in stableCompanies.vals())  { if (companiesStore.get(k) == null) { companiesStore.add(k, v) } };
     for ((k, v) in stableDeals.vals())      { if (dealsMap.get(k) == null)       { dealsMap.add(k, v) } };
     for ((k, v) in stableTasks.vals())      { if (tasksStore.get(k) == null)     { tasksStore.add(k, v) } };
     for ((k, v) in stableActivities.vals()) { if (activitiesStoreV2.get(k) == null) { activitiesStoreV2.add(k, v) } };
     for ((k, v) in stableProfiles.vals())   { if (userProfiles.get(k) == null)   { userProfiles.add(k, v) } };
-    // Clear arrays -- data now lives in the stable maps permanently
     stableContacts  := [];
     stableCompanies := [];
     stableDeals     := [];
@@ -355,12 +370,16 @@ actor {
     caller.toText();
   };
 
-  // ── User Profile ───────────────────────────────────────────────────────
-
-  public query ({ caller }) func getCallerUserProfile() : async ?UserProfile {
+  func requireUser(caller : Principal) {
     if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
       Runtime.trap("Unauthorized");
     };
+  };
+
+  // ── User Profile ───────────────────────────────────────────────────────
+
+  public query ({ caller }) func getCallerUserProfile() : async ?UserProfile {
+    requireUser(caller);
     userProfiles.get(caller);
   };
 
@@ -372,18 +391,16 @@ actor {
   };
 
   public shared ({ caller }) func saveCallerUserProfile(profile : UserProfile) : async () {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     userProfiles.add(caller, profile);
   };
 
   // ── Contacts ───────────────────────────────────────────────────────────
 
   public shared ({ caller }) func createContact(input : ContactInput) : async Text {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     let id = await generateUUID();
     let ts = Time.now();
     contactsStore.add(id, {
@@ -405,9 +422,8 @@ actor {
   };
 
   public shared ({ caller }) func updateContact(id : Text, input : ContactInput) : async () {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     switch (contactsStore.get(id)) {
       case (null) { Runtime.trap("Contact not found.") };
       case (?old) {
@@ -430,9 +446,8 @@ actor {
   };
 
   public shared ({ caller }) func deleteContact(id : Text) : async () {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     switch (contactsStore.get(id)) {
       case (null) { Runtime.trap("Contact not found.") };
       case (?c)   { validateTenant(caller, c.tenantId); contactsStore.remove(id) };
@@ -440,17 +455,13 @@ actor {
   };
 
   public query ({ caller }) func listContacts() : async [Contact] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     contactsStore.values().toArray().filter(func(c) { c.tenantId == tid });
   };
 
   public query ({ caller }) func getContact(id : Text) : async Contact {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     switch (contactsStore.get(id)) {
       case (null) { Runtime.trap("Contact not found.") };
       case (?c)   { validateTenant(caller, c.tenantId); c };
@@ -458,9 +469,7 @@ actor {
   };
 
   public query ({ caller }) func searchContacts(q : Text) : async [Contact] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     contactsStore.values().toArray().filter(func(c) {
       c.tenantId == tid and (
@@ -473,9 +482,8 @@ actor {
   // ── Companies ──────────────────────────────────────────────────────────
 
   public shared ({ caller }) func createCompany(input : CompanyInput) : async Text {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     let id = await generateUUID();
     companiesStore.add(id, {
       id;
@@ -493,9 +501,8 @@ actor {
   };
 
   public shared ({ caller }) func updateCompany(id : Text, input : CompanyInput) : async () {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     switch (companiesStore.get(id)) {
       case (null) { Runtime.trap("Company not found.") };
       case (?old) {
@@ -515,9 +522,8 @@ actor {
   };
 
   public shared ({ caller }) func deleteCompany(id : Text) : async () {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     switch (companiesStore.get(id)) {
       case (null) { Runtime.trap("Company not found.") };
       case (?c)   { validateTenant(caller, c.tenantId); companiesStore.remove(id) };
@@ -525,17 +531,13 @@ actor {
   };
 
   public query ({ caller }) func listCompanies() : async [Company] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     companiesStore.values().toArray().filter(func(c) { c.tenantId == tid });
   };
 
   public query ({ caller }) func getCompany(id : Text) : async Company {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     switch (companiesStore.get(id)) {
       case (null) { Runtime.trap("Company not found.") };
       case (?c)   { validateTenant(caller, c.tenantId); c };
@@ -543,9 +545,7 @@ actor {
   };
 
   public query ({ caller }) func searchCompanies(q : Text) : async [Company] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     companiesStore.values().toArray().filter(func(c) {
       c.tenantId == tid and (
@@ -558,9 +558,8 @@ actor {
   // ── Deals ──────────────────────────────────────────────────────────────
 
   public shared ({ caller }) func createDeal(input : DealInput) : async Text {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     let id = await generateUUID();
     let ts = Time.now();
     dealsMap.add(id, {
@@ -585,9 +584,8 @@ actor {
   };
 
   public shared ({ caller }) func updateDeal(id : Text, input : DealInput) : async () {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     switch (dealsMap.get(id)) {
       case (null) { Runtime.trap("Deal not found.") };
       case (?old) {
@@ -613,9 +611,8 @@ actor {
   };
 
   public shared ({ caller }) func deleteDeal(id : Text) : async () {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     switch (dealsMap.get(id)) {
       case (null) { Runtime.trap("Deal not found.") };
       case (?d)   { validateTenant(caller, d.tenantId); dealsMap.remove(id) };
@@ -623,17 +620,13 @@ actor {
   };
 
   public query ({ caller }) func listDeals() : async [Deal] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     dealsMap.values().toArray().filter(func(d) { d.tenantId == tid });
   };
 
   public query ({ caller }) func getDeal(id : Text) : async Deal {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     switch (dealsMap.get(id)) {
       case (null) { Runtime.trap("Deal not found.") };
       case (?d)   { validateTenant(caller, d.tenantId); d };
@@ -641,17 +634,13 @@ actor {
   };
 
   public query ({ caller }) func listDealsByStage(stage : Stage) : async [Deal] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     dealsMap.values().toArray().filter(func(d) { d.tenantId == tid and d.stage == stage });
   };
 
   public query ({ caller }) func searchDeals(q : Text) : async [Deal] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     dealsMap.values().toArray().filter(func(d) {
       d.tenantId == tid and (
@@ -662,9 +651,8 @@ actor {
   };
 
   public shared ({ caller }) func setDealNextActivity(id : Text, input : DealNextActivityInput) : async () {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     switch (dealsMap.get(id)) {
       case (null) { Runtime.trap("Deal not found.") };
       case (?d) {
@@ -682,9 +670,8 @@ actor {
   // ── Tasks ──────────────────────────────────────────────────────────────
 
   public shared ({ caller }) func createTask(input : TaskInput) : async Text {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     let id = await generateUUID();
     tasksStore.add(id, {
       id;
@@ -703,9 +690,8 @@ actor {
   };
 
   public shared ({ caller }) func updateTask(id : Text, input : TaskInput) : async () {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     switch (tasksStore.get(id)) {
       case (null) { Runtime.trap("Task not found.") };
       case (?old) {
@@ -726,9 +712,8 @@ actor {
   };
 
   public shared ({ caller }) func deleteTask(id : Text) : async () {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     switch (tasksStore.get(id)) {
       case (null) { Runtime.trap("Task not found.") };
       case (?t)   { validateTenant(caller, t.tenantId); tasksStore.remove(id) };
@@ -736,17 +721,13 @@ actor {
   };
 
   public query ({ caller }) func listTasks() : async [Task] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     tasksStore.values().toArray().filter(func(t) { t.tenantId == tid });
   };
 
   public query ({ caller }) func getTask(id : Text) : async Task {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     switch (tasksStore.get(id)) {
       case (null) { Runtime.trap("Task not found.") };
       case (?t)   { validateTenant(caller, t.tenantId); t };
@@ -754,9 +735,7 @@ actor {
   };
 
   public query ({ caller }) func listTasksByCompleted(completed : Bool) : async [Task] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     tasksStore.values().toArray().filter(func(t) { t.tenantId == tid and t.completed == completed });
   };
@@ -764,9 +743,8 @@ actor {
   // ── Activities ─────────────────────────────────────────────────────────
 
   public shared ({ caller }) func createActivity(input : ActivityInput) : async Text {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     let id = await generateUUID();
     activitiesStoreV2.add(id, {
       id;
@@ -787,9 +765,8 @@ actor {
   };
 
   public shared ({ caller }) func updateActivity(id : Text, input : ActivityInput) : async () {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     switch (activitiesStoreV2.get(id)) {
       case (null) { Runtime.trap("Activity not found.") };
       case (?old) {
@@ -812,9 +789,8 @@ actor {
   };
 
   public shared ({ caller }) func deleteActivity(id : Text) : async () {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     switch (activitiesStoreV2.get(id)) {
       case (null) { Runtime.trap("Activity not found.") };
       case (?a)   { validateTenant(caller, a.tenantId); activitiesStoreV2.remove(id) };
@@ -822,17 +798,13 @@ actor {
   };
 
   public query ({ caller }) func listActivities() : async [Activity] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     activitiesStoreV2.values().toArray().filter(func(a) { a.tenantId == tid });
   };
 
   public query ({ caller }) func getActivity(id : Text) : async Activity {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     switch (activitiesStoreV2.get(id)) {
       case (null) { Runtime.trap("Activity not found.") };
       case (?a)   { validateTenant(caller, a.tenantId); a };
@@ -840,9 +812,7 @@ actor {
   };
 
   public query ({ caller }) func listActivitiesByContact(contactId : Text) : async [Activity] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     activitiesStoreV2.values().toArray().filter(func(a) {
       a.tenantId == tid and a.contactId == contactId
@@ -850,9 +820,7 @@ actor {
   };
 
   public query ({ caller }) func listActivitiesByDeal(dealId : Text) : async [Activity] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     activitiesStoreV2.values().toArray().filter(func(a) {
       a.tenantId == tid and a.dealId == dealId
@@ -860,9 +828,7 @@ actor {
   };
 
   public query ({ caller }) func listActivitiesByCompany(companyId : Text) : async [Activity] {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
     let tid = getTenantId(caller);
     activitiesStoreV2.values().toArray().filter(func(a) {
       a.tenantId == tid and a.companyId == companyId
@@ -894,7 +860,10 @@ actor {
 
   let vetkdContext : Blob = "orbita_crm_v1".encodeUtf8();
 
-  public shared func vetkdPublicKey() : async Blob {
+  // Requires authenticated caller -- public key is safe to return to any
+  // authenticated user since it is the same for the whole canister.
+  public shared ({ caller }) func vetkdPublicKey() : async Blob {
+    requireUser(caller);
     let response = await vetkdManagementCanister.vetkd_public_key({
       canister_id = null;
       context = vetkdContext;
@@ -903,10 +872,11 @@ actor {
     response.public_key
   };
 
+  // Derives a caller-specific encrypted key. Auth and rate limit checked
+  // before the async call to avoid any async-safety issues.
   public shared ({ caller }) func vetkdDeriveKey(transportPublicKey : Blob) : async Blob {
-    if (not AccessControl.hasPermission(accessControlState, caller, #user)) {
-      Runtime.trap("Unauthorized");
-    };
+    requireUser(caller);
+    rateLimit(caller);
     let response = await (with cycles = 26_000_000_000) vetkdManagementCanister.vetkd_derive_key({
       input = caller.toBlob();
       context = vetkdContext;

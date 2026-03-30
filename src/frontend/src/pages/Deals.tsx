@@ -3,7 +3,6 @@ import {
   Activity,
   Clock,
   Download,
-  LayoutList,
   Plus,
   Search,
   TrendingUp,
@@ -79,10 +78,8 @@ export default function Deals() {
   const { actor, isFetching } = useActor();
   const [deals, setDeals] = useState<Deal[]>([]);
   const [loading, setLoading] = useState(true);
-  const [dragId, setDragId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [stageFilter, setStageFilter] = useState<Stage | "all">("all");
-  const [viewMode, setViewMode] = useState<"kanban" | "list">("kanban");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkStage, setBulkStage] = useState<Stage | "">("");
   const [bulkWorking, setBulkWorking] = useState(false);
@@ -142,54 +139,6 @@ export default function Deals() {
     }
     return result;
   }, [deals, search, stageFilter]);
-
-  const visibleStages = useMemo(
-    () =>
-      stageFilter === "all" ? STAGES : STAGES.filter((s) => s === stageFilter),
-    [stageFilter],
-  );
-
-  const dealsByStage = (stage: Stage) =>
-    filteredDeals.filter((d) => d.stage === stage);
-  const stageValue = (stage: Stage) =>
-    dealsByStage(stage).reduce((s, d) => s + d.value, 0);
-
-  function onDragStart(e: React.DragEvent, id: string) {
-    setDragId(id);
-    e.dataTransfer.effectAllowed = "move";
-  }
-
-  function onDragOver(e: React.DragEvent) {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-  }
-
-  async function onDrop(e: React.DragEvent, stage: Stage) {
-    e.preventDefault();
-    if (!dragId || !actor) return;
-    const deal = deals.find((d) => d.id === dragId);
-    if (!deal) return;
-    setDragId(null);
-    try {
-      await actor.updateDeal(dragId, {
-        title: deal.title,
-        contactName: deal.contactName,
-        value: deal.value,
-        tags: deal.tags,
-        stage,
-        notes: deal.notes,
-        companyName: deal.companyName,
-        contactId: deal.contactId,
-        companyId: deal.companyId,
-        nextActivityDate: deal.nextActivityDate,
-        nextActivityNote: deal.nextActivityNote,
-        nextActivityType: deal.nextActivityType,
-      });
-      await reload();
-    } catch (e) {
-      console.error("Failed to update deal stage", e);
-    }
-  }
 
   function navigateToDeal(id: string) {
     navigate({ to: "/deals/$id", params: { id } });
@@ -315,7 +264,7 @@ export default function Deals() {
         <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
           <div>
             <h1 className="font-heading text-xl font-semibold text-foreground">
-              Pipeline
+              Deals
             </h1>
             <p className="text-sm text-muted-foreground mt-0.5">
               {deals.length} deals
@@ -330,39 +279,6 @@ export default function Deals() {
             >
               <Download size={14} /> Export CSV
             </button>
-            {/* View toggle */}
-            <div className="flex border border-border rounded-lg overflow-hidden">
-              <button
-                type="button"
-                data-ocid="deals.kanban_toggle"
-                onClick={() => {
-                  setViewMode("kanban");
-                  setSelectedIds(new Set());
-                }}
-                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors ${
-                  viewMode === "kanban"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-card text-foreground/70 hover:bg-secondary"
-                }`}
-              >
-                <TrendingUp size={13} /> Kanban
-              </button>
-              <button
-                type="button"
-                data-ocid="deals.list_toggle"
-                onClick={() => {
-                  setViewMode("list");
-                  setSelectedIds(new Set());
-                }}
-                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors ${
-                  viewMode === "list"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-card text-foreground/70 hover:bg-secondary"
-                }`}
-              >
-                <LayoutList size={13} /> List
-              </button>
-            </div>
             <button
               type="button"
               data-ocid="deals.primary_button"
@@ -406,7 +322,7 @@ export default function Deals() {
           </select>
         </div>
 
-        {/* Stats bar on smaller screens (below lg) */}
+        {/* Stats bar on smaller screens */}
         <div className="lg:hidden grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
           {statCards.map((card) => (
             <div
@@ -435,83 +351,7 @@ export default function Deals() {
           >
             Loading...
           </div>
-        ) : viewMode === "kanban" ? (
-          <div className="flex gap-3 overflow-x-auto pb-4">
-            {visibleStages.map((stage) => {
-              const sc = STAGE_COLORS[stage];
-              return (
-                <div
-                  key={stage}
-                  className={`flex-shrink-0 w-56 flex flex-col border-l-4 ${sc.border} rounded-l-sm`}
-                  onDragOver={onDragOver}
-                  onDrop={(e) => onDrop(e, stage)}
-                >
-                  <div className="rounded-r-xl rounded-bl-xl bg-secondary p-3 flex flex-col h-full">
-                    <div className="mb-3">
-                      <div className="flex items-center justify-between mb-0.5">
-                        <span className="text-xs font-semibold text-foreground">
-                          {STAGE_LABELS[stage]}
-                        </span>
-                        <span className="text-xs font-semibold text-foreground">
-                          {dealsByStage(stage).length}
-                        </span>
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {fmt(stageValue(stage))}
-                      </div>
-                    </div>
-                    <div className="flex flex-col gap-2 flex-1">
-                      {dealsByStage(stage).map((deal, i) => (
-                        <button
-                          type="button"
-                          key={deal.id}
-                          data-ocid={`deals.item.${i + 1}`}
-                          draggable
-                          onDragStart={(e) => onDragStart(e, deal.id)}
-                          onClick={() => navigateToDeal(deal.id)}
-                          className={`bg-card rounded-lg p-3 border border-border shadow-xs cursor-grab active:cursor-grabbing hover:shadow-md transition-all duration-150 text-left w-full ${dragId === deal.id ? "opacity-80 rotate-1 scale-[1.03] shadow-lg" : ""}`}
-                        >
-                          <div className="text-xs font-semibold text-foreground mb-0.5 truncate">
-                            {deal.companyName || deal.title}
-                          </div>
-                          <div className="text-xs font-bold text-foreground mb-2">
-                            {fmt(deal.value)}
-                          </div>
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="text-[10px] text-muted-foreground truncate flex-1">
-                              {deal.contactName}
-                            </span>
-                            <span
-                              className={`inline-flex items-center text-[9px] font-semibold px-1.5 py-0.5 rounded-full border ${sc.border} ${sc.bg} ${sc.text} flex-shrink-0`}
-                            >
-                              {STAGE_LABELS[stage]}
-                            </span>
-                          </div>
-                          {deal.nextActivityDate && (
-                            <div className="mt-1.5 flex items-center gap-1 text-[10px] text-amber-600">
-                              <span>📅</span>
-                              <span>
-                                {new Date(
-                                  Number(deal.nextActivityDate),
-                                ).toLocaleDateString()}
-                              </span>
-                            </div>
-                          )}
-                        </button>
-                      ))}
-                      {dealsByStage(stage).length === 0 && (
-                        <div className="text-center py-4 text-xs text-muted-foreground">
-                          {search ? "No matches" : "No deals"}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
         ) : (
-          /* List view */
           <div className="bg-card rounded-xl border border-border shadow-xs overflow-hidden">
             <table className="w-full">
               <thead>
@@ -570,9 +410,7 @@ export default function Deals() {
                             navigateToDeal(deal.id);
                         }}
                         tabIndex={0}
-                        className={`group hover:bg-secondary/50 transition-colors cursor-pointer outline-none focus:bg-secondary/50 ${
-                          checked ? "bg-primary/5" : ""
-                        }`}
+                        className={`group hover:bg-secondary/50 transition-colors cursor-pointer outline-none focus:bg-secondary/50 ${checked ? "bg-primary/5" : ""}`}
                       >
                         <td
                           className="px-4 py-3 w-10"
@@ -664,7 +502,7 @@ export default function Deals() {
       </div>
 
       {/* Bulk action bar */}
-      {viewMode === "list" && selectedIds.size > 0 && (
+      {selectedIds.size > 0 && (
         <div
           data-ocid="deals.bulk_action.panel"
           className="fixed bottom-4 left-1/2 -translate-x-1/2 bg-foreground text-background rounded-xl shadow-lg px-4 py-3 flex items-center gap-3 z-50 flex-wrap"

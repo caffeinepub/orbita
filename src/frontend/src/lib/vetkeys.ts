@@ -1,5 +1,10 @@
-// Phase V1: vetkd encryption for deal notes
+// Phase V1/V2: vetkd encryption for deal notes and contact PII
 // AES-GCM encryption with key derived from vetkd per-user identity
+import {
+  DerivedPublicKey,
+  EncryptedVetKey,
+  TransportSecretKey,
+} from "@dfinity/vetkeys";
 
 const ENCRYPTED_PREFIX = "enc:v1:";
 
@@ -60,25 +65,16 @@ export async function getOrDeriveAesKey(
   const cached = aesKeyCache.get(principalHex);
   if (cached) return cached;
 
-  // Dynamic import — avoids build issues if package types are incomplete
-  const vetkeys = await import("@dfinity/vetkeys");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { TransportSecretKey } = vetkeys as any;
-
-  // 1. Generate a fresh transport keypair
-  const seed = crypto.getRandomValues(new Uint8Array(32));
-  const transportSecretKey = TransportSecretKey.fromSeed(seed);
+  // 1. Generate a fresh random transport keypair
+  const transportSecretKey = TransportSecretKey.random();
 
   // 2. Fetch encrypted vetKey + verification key from the canister in parallel
   const [encryptedKeyBytes, verificationKeyBytes] = await Promise.all([
-    actor.vetkdDeriveKey(transportSecretKey.publicKey()),
+    actor.vetkdDeriveKey(transportSecretKey.publicKeyBytes()),
     actor.vetkdPublicKey(),
   ]);
 
   // 3. Deserialise, decrypt, and verify
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { DerivedPublicKey, EncryptedVetKey } = vetkeys as any;
-
   const verificationKey = DerivedPublicKey.deserialize(
     new Uint8Array(verificationKeyBytes as unknown as number[]),
   );
@@ -91,15 +87,9 @@ export async function getOrDeriveAesKey(
     principalBytes,
   );
 
-  // 4. Derive a 256-bit AES-GCM key from the vetKey material
-  const aesKeyMaterial = vetKey.toDerivedKeyMaterial();
-  const aesKey = await crypto.subtle.importKey(
-    "raw",
-    aesKeyMaterial.data.slice(0, 32),
-    { name: "AES-GCM" },
-    false,
-    ["encrypt", "decrypt"],
-  );
+  // 4. Derive key material and extract an AES-GCM CryptoKey
+  const keyMaterial = await vetKey.asDerivedKeyMaterial();
+  const aesKey = keyMaterial.getCryptoKey();
 
   aesKeyCache.set(principalHex, aesKey);
   return aesKey;

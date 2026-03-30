@@ -15,7 +15,8 @@ import Contacts from "./pages/Contacts";
 import Dashboard from "./pages/Dashboard";
 import DealDetail from "./pages/DealDetail";
 import Deals from "./pages/Deals";
-import Login from "./pages/Login";
+import Landing from "./pages/Landing";
+import Pipeline from "./pages/Pipeline";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
 import Tasks from "./pages/Tasks";
@@ -28,12 +29,26 @@ function Root() {
   const { identity, isInitializing } = useInternetIdentity();
   if (isInitializing) {
     return (
-      <div className="flex items-center justify-center h-screen bg-[#F4F6F9]">
-        <div className="text-gray-500 text-sm">Loading...</div>
+      <div
+        className="flex items-center justify-center h-screen"
+        style={{ background: "oklch(0.13 0.028 260)" }}
+      >
+        <div className="flex items-center gap-3">
+          <div
+            className="w-2 h-2 rounded-full animate-pulse"
+            style={{ background: "oklch(0.52 0.19 255)" }}
+          />
+          <span
+            className="text-sm font-medium"
+            style={{ color: "oklch(0.55 0.015 260)" }}
+          >
+            Loading…
+          </span>
+        </div>
       </div>
     );
   }
-  if (!identity) return <Login />;
+  if (!identity) return <Landing />;
   return <Layout />;
 }
 
@@ -87,6 +102,12 @@ const dealDetailRoute = createRoute({
   component: DealDetail,
 });
 
+const pipelineRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pipeline",
+  component: Pipeline,
+});
+
 const tasksRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/tasks",
@@ -120,6 +141,7 @@ const routeTree = rootRoute.addChildren([
   companyDetailRoute,
   dealsRoute,
   dealDetailRoute,
+  pipelineRoute,
   tasksRoute,
   activityRoute,
   reportsRoute,
